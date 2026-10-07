@@ -203,6 +203,8 @@ pub const Mix = enum {
     minimum,
     maximum,
     multiply,
+    /// The two added, no more than one: a bounce off something bouncy.
+    sum_clamped,
 
     pub fn of(mix: Mix, a: f32, b: f32) f32 {
         return switch (mix) {
@@ -211,6 +213,7 @@ pub const Mix = enum {
             .minimum => @min(a, b),
             .maximum => @max(a, b),
             .multiply => a * b,
+            .sum_clamped => @min(a + b, 1),
         };
     }
 };

@@ -127,6 +127,17 @@ test "a ray meets the first thing in its way, and a cast stops where a shape fir
     const past = world.castRay(.init(0, 10, 0), .init(0, -20, 0), .{ .ignore = crate }).?;
     try testing.expectApproxEqAbs(@as(f32, 0.5), past.fraction, 1e-5);
 
+    // Every one along it, nearest first.
+    var all: [4]World.RayHit = undefined;
+    const along = world.castRayAll(.init(0, 10, 0), .init(0, -20, 0), .{}, &all);
+    try testing.expectEqual(@as(usize, 2), along.len);
+    try testing.expect(along[0].body.eql(crate));
+    try testing.expectApproxEqAbs(@as(f32, 0.5), along[1].fraction, 1e-5);
+    // Room for one: the nearest.
+    const one = world.castRayAll(.init(0, 10, 0), .init(0, -20, 0), .{}, all[0..1]);
+    try testing.expect(one[0].body.eql(crate));
+    const up = world.castRayAll(.init(0, -10, 0), .init(0, 20, 0), .{}, all[0..1]);
+    try testing.expectApproxEqAbs(@as(f32, 9.0 / 20.0), up[0].fraction, 1e-5);
     // A ball cast down onto the crate stops its radius above it.
     const cast = world.castShape(.{ .sphere = .{ .radius = 0.5 } }, .at(.init(0.2, 6, 0.1)), .init(0, -10, 0), .{}).?;
     try testing.expectApproxEqAbs(@as(f32, (6 - 2.5) / 10.0), cast.fraction, 2e-3);

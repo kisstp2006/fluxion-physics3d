@@ -124,6 +124,10 @@ pub const QueryFilter = struct {
     ignore: BodyId = .none,
     /// Whether sensors are seen.
     sensors: bool = false,
+    /// How far short a cast stops, and how near counts as sunk in to
+    /// `penetrations`: what a character keeps clear of walls by. Nought is
+    /// the slop.
+    margin: f32 = 0,
 };
 
 pub const ShapeHit = struct {
@@ -904,6 +908,56 @@ pub fn castRay(self: *World, origin: Vec3, translation: Vec3, filter: QueryFilte
     return walk.best;
 }
 
+/// Every shape a ray from `origin` along `translation` meets, from outside
+/// each, nearest first - the nearest as many as `found` holds: what a
+/// pointer that may pass through some things and stop at others walks.
+pub fn castRayAll(self: *World, origin: Vec3, translation: Vec3, filter: QueryFilter, found: []RayHit) []RayHit {
+    const Walk = struct {
+        world: *World,
+        origin: Vec3,
+        translation: Vec3,
+        filter: QueryFilter,
+        found: []RayHit,
+        count: usize = 0,
+
+        fn visit(walk: *@This(), index: u32, _: f32) f32 {
+            const entry = walk.world.shapeAt(index);
+            if (!walk.world.sees(entry, walk.filter)) return -1;
+            const hit = entry.def.geometry.rayCast(walk.world.shapeTransform(entry), walk.origin, walk.translation, 1) orelse return -1;
+            const met: RayHit = .{
+                .shape = walk.world.handleOfShape(index),
+                .body = entry.body,
+                .point = walk.origin.mulAdd(walk.translation, hit.fraction),
+                .normal = hit.normal,
+                .fraction = hit.fraction,
+            };
+            if (walk.count < walk.found.len) {
+                walk.found[walk.count] = met;
+                walk.count += 1;
+            } else if (walk.found.len > 0) {
+                // Full: the nearest are kept, in place of the furthest.
+                var furthest: usize = 0;
+                for (walk.found, 0..) |kept, i| {
+                    if (kept.fraction > walk.found[furthest].fraction) furthest = i;
+                }
+                if (met.fraction < walk.found[furthest].fraction) walk.found[furthest] = met;
+            }
+            // Not shortened: every one along the whole ray.
+            return -1;
+        }
+    };
+    var walk: Walk = .{ .world = self, .origin = origin, .translation = translation, .filter = filter, .found = found };
+    self.static_tree.rayCast(origin, translation, 1, &walk, Walk.visit);
+    self.moving_tree.rayCast(origin, translation, 1, &walk, Walk.visit);
+    const hits = found[0..walk.count];
+    std.mem.sort(RayHit, hits, {}, nearer);
+    return hits;
+}
+
+fn nearer(_: void, a: RayHit, b: RayHit) bool {
+    return a.fraction < b.fraction;
+}
+
 /// Where `g`, placed by `xf` and moved along `translation`, first comes to
 /// touch a shape - stopping a little short, the slop away.
 pub fn castShape(self: *World, g: Geometry, xf: Transform, translation: Vec3, filter: QueryFilter) ?ShapeHit {
@@ -923,7 +977,7 @@ pub fn castShape(self: *World, g: Geometry, xf: Transform, translation: Vec3, fi
             const entry = world.shapeAt(index);
             if (!world.sees(entry, walk.filter)) return -1;
             const shape_xf = world.shapeTransform(entry);
-            const target = world.settings.linear_slop;
+            const target = @max(walk.filter.margin, world.settings.linear_slop);
             var best: ?gjk.CastResult = null;
             if (entry.def.geometry == .mesh) {
                 const mesh = entry.def.geometry.mesh;
@@ -978,9 +1032,10 @@ pub fn overlapShape(self: *World, g: Geometry, xf: Transform, filter: QueryFilte
     return found[0..count];
 }
 
-/// How far `g`, placed by `xf`, has sunk into each shape it overlaps, and
-/// the way out - a mesh triangle by triangle. What a character steps out of
-/// what it has walked into with.
+/// How far `g`, placed by `xf`, has sunk into each shape it overlaps - or
+/// come nearer to it than `filter.margin` - and the way out, a mesh
+/// triangle by triangle. What a character steps out of what it has walked
+/// into with.
 pub fn penetrations(self: *World, g: Geometry, xf: Transform, filter: QueryFilter, found: []Penetration) []Penetration {
     var store: collide.Storage = .{};
     const mine = collide.solidOf(g, xf, &store) orelse return found[0..0];
@@ -998,9 +1053,9 @@ pub fn penetrations(self: *World, g: Geometry, xf: Transform, filter: QueryFilte
             for (m.pointSlice()) |p| if (p.separation < deepest.separation) {
                 deepest = p;
             };
-            if (deepest.separation >= 0) return;
+            if (deepest.separation >= walk.filter.margin) return;
             const entry = walk.world.shapeAt(index);
-            walk.found[walk.count] = .{ .shape = walk.world.handleOfShape(index), .body = entry.body, .normal = m.normal, .depth = -deepest.separation, .point = deepest.point };
+            walk.found[walk.count] = .{ .shape = walk.world.handleOfShape(index), .body = entry.body, .normal = m.normal, .depth = walk.filter.margin - deepest.separation, .point = deepest.point };
             walk.count += 1;
         }
 
@@ -1018,12 +1073,12 @@ pub fn penetrations(self: *World, g: Geometry, xf: Transform, filter: QueryFilte
                     const corners = mesh.triangle(t);
                     var store_tri: collide.Storage = .{};
                     const tri = collide.triangleSolid(&store_tri, shape_xf.apply(corners[0]), shape_xf.apply(corners[1]), shape_xf.apply(corners[2]));
-                    walk.take(index, collide.collide(tri, walk.mine, 0));
+                    walk.take(index, collide.collide(tri, walk.mine, walk.filter.margin));
                 }
             } else {
                 var other_store: collide.Storage = .{};
                 const other = collide.solidOf(entry.def.geometry, shape_xf, &other_store).?;
-                walk.take(index, collide.collide(other, walk.mine, 0));
+                walk.take(index, collide.collide(other, walk.mine, walk.filter.margin));
             }
             return walk.count < walk.found.len;
         }

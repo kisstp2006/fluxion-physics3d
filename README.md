@@ -104,6 +104,12 @@ that touches it, still for `time_to_sleep`. A step passes a sleeper over
 until something wakes it - a push, a new speed, a move, or a body running
 into it. A body riding something that moves never sleeps.
 
+**Two materials make one**, as `Settings` says: `friction_mix` - the
+geometric mean, unless a game says the average, the smaller, the larger,
+the two multiplied, or the two added and no more than one - and
+`restitution_mix`, the larger. `filter_rule` says whether two shapes touch
+when each one's mask has the other's layer, or either's.
+
 **What began and stopped touching** is said after each step:
 `beginEvents` and `endEvents`, sensors included, a mesh's triangles counted
 once.
@@ -113,12 +119,15 @@ once.
 | | |
 | --- | --- |
 | `castRay(origin, translation, filter)` | The first shape a ray meets, where, and the normal there. |
-| `castShape(geometry, transform, translation, filter)` | Where a shape moved along a line first comes to touch something, stopping the slop short. |
+| `castRayAll(origin, translation, filter, out)` | Every shape along it, nearest first - the nearest as many as `out` holds. |
+| `castShape(geometry, transform, translation, filter)` | Where a shape moved along a line first comes to touch something, stopping the slop short. One touching already is stopped only going nearer, so it slides along what it rests on. |
 | `penetrations(geometry, transform, filter, out)` | How deep a shape has sunk into each it overlaps, and the way out: what a character steps out of walls with. |
 | `overlapShape`, `overlapPoint`, `overlapAabb` | What a shape, a point or a box overlaps. |
 
 A `QueryFilter` says which layers are seen, a body to pass over - the one
-cast from - and whether sensors count.
+cast from - whether sensors count, and a `margin`: how far short a cast
+stops, and how near counts as sunk in to `penetrations` - what a character
+keeps clear of walls by.
 
 ## Tests
 

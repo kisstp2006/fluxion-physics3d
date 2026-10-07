@@ -296,6 +296,10 @@ pub const CastResult = struct {
 
 /// Where `b`, moved along `translation`, first comes within `target` of
 /// touching `a` - no further than `max_fraction` of the way - or null.
+/// How far into what it rests on, for each of its length, a cast may go
+/// and still be going along it.
+const parallel = 1e-3;
+
 pub fn cast(a: Proxy, b: Proxy, translation: Vec3, target: f32, max_fraction: f32) ?CastResult {
     var moved = b;
     var t: f32 = 0;
@@ -311,8 +315,11 @@ pub fn cast(a: Proxy, b: Proxy, translation: Vec3, target: f32, max_fraction: f3
         const gap = found.distance - radii;
         const n = found.normal();
         if (gap <= target) {
-            if (t == 0 and gap < 0) return .{ .fraction = 0, .point = found.point_a.mulAdd(n, a.radius), .normal = n, .initially_overlapping = true };
-            return .{ .fraction = t, .point = found.point_a.mulAdd(n, a.radius), .normal = n, .initially_overlapping = false };
+            // Starting this near, it is stopped only going nearer: one
+            // resting on a floor still walks along it - a slide along the
+            // floor a hair into it, from rounding, too.
+            if (t == 0 and translation.dot(n) >= -parallel * translation.len()) return null;
+            return .{ .fraction = t, .point = found.point_a.mulAdd(n, a.radius), .normal = n, .initially_overlapping = t == 0 and gap < 0 };
         }
         // How fast the gap closes along the line between the nearest points.
         const closing = -translation.dot(n);
@@ -363,4 +370,17 @@ test "a box cast at another stops a target short of it, and one cast away misses
     try testing.expect(hit.normal.approxEql(.init(1, 0, 0)));
     try testing.expect(cast(a, b, .init(20, 0, 0), 0.01, 1) == null);
     try testing.expect(cast(a, b, .init(-5, 0, 0), 0.01, 1) == null);
+    // Resting against it: stopped at once going in, free going along it.
+    const resting: Proxy = .{ .points = &cube, .xf = .at(.init(2.005, 0, 0)) };
+    try testing.expectEqual(@as(f32, 0), cast(a, resting, .init(-1, 0, 0), 0.01, 1).?.fraction);
+    try testing.expect(cast(a, resting, .init(0, 0, 3), 0.01, 1) == null);
+    // Resting on a slope and sliding up it, a rounding into it: still free.
+    const n = Vec3.init(0.309017, 0.9510565, 0);
+    const uphill = Vec3.init(-0.9510565, 0.309017, 0);
+    const across = Vec3.init(0, 0, 1);
+    const slope = [_]Vec3{ uphill.scale(-50).sub(across.scale(50)), uphill.scale(50).sub(across.scale(50)), across.scale(50) };
+    const ball: Proxy = .{ .points = &.{Vec3.zero}, .xf = .at(n.scale(0.005)), .radius = 0 };
+    const along = uphill.scale(0.08).sub(n.scale(1e-8));
+    try testing.expect(cast(.{ .points = &slope }, ball, along, 0.01, 1) == null);
+    try testing.expectEqual(@as(f32, 0), cast(.{ .points = &slope }, ball, along.sub(n.scale(0.01)), 0.01, 1).?.fraction);
 }
