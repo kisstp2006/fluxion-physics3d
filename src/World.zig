@@ -174,6 +174,9 @@ contacts: ContactMap = .empty,
 previous: ContactMap = .empty,
 begin_events: std.ArrayList(ContactEvent) = .empty,
 end_events: std.ArrayList(ContactEvent) = .empty,
+/// The touches of shapes taken out since the last step: they end in the
+/// next one.
+dropped_ends: std.ArrayList(ContactEvent) = .empty,
 
 // Worked out each step, kept for their memory.
 movers: std.ArrayList(u32) = .empty,
@@ -222,6 +225,7 @@ pub fn deinit(self: *World) void {
     self.previous.deinit(gpa);
     self.begin_events.deinit(gpa);
     self.end_events.deinit(gpa);
+    self.dropped_ends.deinit(gpa);
     self.movers.deinit(gpa);
     self.mover_mark.deinit(gpa);
     self.tight.deinit(gpa);
@@ -345,21 +349,34 @@ pub fn removeShape(self: *World, handle: ShapeId) void {
     if (self.bodies.get(owner)) |b| b.wake();
 }
 
-/// Out of its tree and its contacts, and gone.
+/// Out of its tree and its contacts, and gone. What it touched ends in the
+/// next step, and what it held up or leaned on wakes.
 fn dropShape(self: *World, handle: ShapeId, entry: *ShapeEntry) void {
     const tree = if (entry.in_static) &self.static_tree else &self.moving_tree;
     tree.remove(entry.proxy);
-    // What it touched forgets it. Whoever took it away knows it is gone.
     for ([_]*ContactMap{ &self.contacts, &self.previous }) |map| {
         while (true) {
             var it = map.iterator();
             const gone = while (it.next()) |kv| {
-                if (kv.value_ptr.shape_a.eql(handle) or kv.value_ptr.shape_b.eql(handle)) break kv.key_ptr.*;
+                if (kv.value_ptr.shape_a.eql(handle) or kv.value_ptr.shape_b.eql(handle)) break kv;
             } else null;
-            _ = map.remove(gone orelse break);
+            const kv = gone orelse break;
+            if (map == &self.contacts) self.dropTouch(kv.value_ptr.*);
+            _ = map.remove(kv.key_ptr.*);
         }
     }
     _ = self.shapes.remove(handle);
+}
+
+fn dropTouch(self: *World, stored: Stored) void {
+    if (!stored.sensor) {
+        if (self.bodies.get(stored.body_a)) |b| b.wake();
+        if (self.bodies.get(stored.body_b)) |b| b.wake();
+    }
+    // A mesh's triangles are one touch.
+    for (self.dropped_ends.items) |e| if (e.shape_a.eql(stored.shape_a) and e.shape_b.eql(stored.shape_b)) return;
+    // Out of memory, the end goes unsaid: the shape is gone either way.
+    self.dropped_ends.append(self.gpa, eventOf(stored)) catch {};
 }
 
 pub fn shape(self: *World, handle: ShapeId) ?*ShapeEntry {
@@ -469,6 +486,8 @@ pub fn step(self: *World, dt: f32) Error!void {
     self.step_count += 1;
     self.begin_events.clearRetainingCapacity();
     self.end_events.clearRetainingCapacity();
+    try self.end_events.appendSlice(gpa, self.dropped_ends.items);
+    self.dropped_ends.clearRetainingCapacity();
 
     const substeps = @max(s.substeps, 1);
     const h = dt / @as(f32, @floatFromInt(substeps));

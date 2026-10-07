@@ -192,3 +192,30 @@ test "hulls and cylinders fall and rest on their faces" {
     try testing.expectApproxEqAbs(@as(f32, 0.2), world.body(rock).?.center.y, 0.03);
     try testing.expectApproxEqAbs(@as(f32, 0.5), world.body(drum).?.center.y, 0.03);
 }
+
+test "a floor taken away ends what touched it in the next step, and what slept on it falls" {
+    var world: World = .init(testing.allocator, .{});
+    defer world.deinit();
+    const ground = try world.createBody(.{ .type = .static, .position = .init(0, -0.5, 0) });
+    const floor = try world.addShape(ground, .box(.init(20, 0.5, 20)));
+    var crates: [2]World.BodyId = undefined;
+    for (&crates, 0..) |*c, i| {
+        c.* = try world.createBody(.{ .position = .init(0, 0.5 + @as(f32, @floatFromInt(i)), 0) });
+        _ = try world.addShape(c.*, .box(.init(0.5, 0.5, 0.5)));
+    }
+    try stepFor(&world, 4);
+    try testing.expectEqual(@as(usize, 0), world.awakeCount());
+
+    world.destroyBody(ground);
+    try world.step(dt);
+    var ended: usize = 0;
+    for (world.endEvents()) |e| {
+        if (e.shape_a.eql(floor) or e.shape_b.eql(floor)) ended += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), ended);
+    // Said once.
+    try world.step(dt);
+    for (world.endEvents()) |e| try testing.expect(!e.shape_a.eql(floor) and !e.shape_b.eql(floor));
+    try stepFor(&world, 1);
+    for (crates) |c| try testing.expect(world.body(c).?.center.y < -1);
+}

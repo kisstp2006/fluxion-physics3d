@@ -112,7 +112,8 @@ when each one's mask has the other's layer, or either's.
 
 **What began and stopped touching** is said after each step:
 `beginEvents` and `endEvents`, sensors included, a mesh's triangles counted
-once.
+once. A shape taken out - or its body - ends what it touched in the next
+step, and what it held up or leaned on wakes.
 
 ## Asking
 
