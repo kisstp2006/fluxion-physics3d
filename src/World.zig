@@ -20,7 +20,9 @@
 //! what the same points pushed last step; the step is cut into substeps,
 //! each integrating the velocities, solving, moving and relaxing; the
 //! bounces are given; what began and stopped touching is said; and islands
-//! of bodies that have been still long enough fall asleep.
+//! of bodies that have been still long enough fall asleep. Joints (`joint`)
+//! are solved in every pass before the contacts, and join islands as a
+//! touch does.
 //!
 //! **Units are metres, kilograms and seconds**, and gravity pulls towards
 //! `-y`, as the engine's 3D world is laid out.
@@ -46,11 +48,14 @@ const contact = @import("contact.zig");
 const gjk = @import("gjk.zig");
 const Softness = @import("Softness.zig");
 const Mesh = @import("mesh.zig");
+const joint_mod = @import("joint.zig");
+const Joint = joint_mod.Joint;
 
 const World = @This();
 
 pub const BodyId = Body.Id;
 pub const ShapeId = Body.ShapeId;
+pub const JointId = joint_mod.Id;
 
 pub const Settings = struct {
     gravity: Vec3 = .init(0, -9.81, 0),
@@ -67,6 +72,13 @@ pub const Settings = struct {
     /// The spring sinking in is taken back with. See `Softness`.
     contact_hertz: f32 = 30,
     contact_damping_ratio: f32 = 10,
+    /// The same for a joint coming apart, or past a limit: stiff enough
+    /// that nobody sees it give.
+    joint_hertz: f32 = 60,
+    joint_damping_ratio: f32 = 2,
+    /// The fastest a joint past its limit is turned back, in radians a
+    /// second.
+    max_limit_turn: f32 = 4,
     /// The fastest sinking in is taken back, in metres a second.
     max_push_speed: f32 = 3,
     /// Slower than this, a hit does not bounce.
@@ -159,6 +171,12 @@ pub const ShapeError = Allocator.Error || error{
     MeshOnMovingBody,
 };
 
+pub const JointError = Allocator.Error || error{
+    NoSuchBody,
+    /// A joint between a body and itself holds nothing.
+    SameBody,
+};
+
 gpa: Allocator,
 settings: Settings,
 
@@ -168,6 +186,9 @@ static_tree: Tree = .empty,
 moving_tree: Tree = .empty,
 /// Pairs of bodies that never collide, by their handles.
 exceptions: std.AutoHashMapUnmanaged([2]u64, void) = .empty,
+joints: id.Table(Joint) = .empty,
+/// Pairs of bodies joints say must not collide, with how many say so.
+joined: std.AutoHashMapUnmanaged([2]u64, u32) = .empty,
 
 /// What touches now, and what touched at the end of the last step.
 contacts: ContactMap = .empty,
@@ -221,6 +242,8 @@ pub fn deinit(self: *World) void {
     self.static_tree.deinit(gpa);
     self.moving_tree.deinit(gpa);
     self.exceptions.deinit(gpa);
+    self.joints.deinit(gpa);
+    self.joined.deinit(gpa);
     self.contacts.deinit(gpa);
     self.previous.deinit(gpa);
     self.begin_events.deinit(gpa);
@@ -282,9 +305,15 @@ fn shapeAt(self: *World, index: u32) *ShapeEntry {
     return &self.shapes.slots.items[index].value.?;
 }
 
-/// Take a body away, with its shapes. What it touched stops touching it.
+/// Take a body away, with its shapes and its joints. What it touched stops
+/// touching it.
 pub fn destroyBody(self: *World, handle: BodyId) void {
     const b = self.bodies.get(handle) orelse return;
+    // A linear walk: a body keeps no list of its joints.
+    for (self.joints.slots.items, 0..) |*slot, i| {
+        const j = slot.value orelse continue;
+        if (j.body_a.eql(handle) or j.body_b.eql(handle)) self.destroyJoint(.{ .index = @intCast(i), .generation = slot.generation });
+    }
     var cursor = b.first_shape;
     while (self.shapes.get(cursor)) |entry| {
         const next = entry.next;
@@ -469,6 +498,51 @@ pub fn removeCollisionException(self: *World, a: BodyId, b: BodyId) void {
     _ = self.exceptions.remove(exceptionKey(a, b));
 }
 
+// -------------------------------------------------------------------------
+// Joints
+// -------------------------------------------------------------------------
+
+/// Hold two bodies to each other. See `joint` for the kinds; the frames
+/// are in each body's own space. Both wake.
+pub fn createJoint(self: *World, def: joint_mod.Def) JointError!JointId {
+    if (def.body_a.eql(def.body_b)) return error.SameBody;
+    const a = self.bodies.get(def.body_a) orelse return error.NoSuchBody;
+    const b = self.bodies.get(def.body_b) orelse return error.NoSuchBody;
+    a.wake();
+    b.wake();
+    const made = Joint.init(def);
+    if (!made.collide) {
+        const held = try self.joined.getOrPut(self.gpa, exceptionKey(def.body_a, def.body_b));
+        held.value_ptr.* = if (held.found_existing) held.value_ptr.* + 1 else 1;
+    }
+    errdefer if (!made.collide) self.unjoin(def.body_a, def.body_b);
+    return self.joints.add(self.gpa, made);
+}
+
+/// Take a joint out. The bodies it held stay where they are, and wake.
+pub fn destroyJoint(self: *World, handle: JointId) void {
+    const gone = self.joints.remove(handle) orelse return;
+    if (!gone.collide) self.unjoin(gone.body_a, gone.body_b);
+    if (self.bodies.get(gone.body_a)) |a| a.wake();
+    if (self.bodies.get(gone.body_b)) |b| b.wake();
+}
+
+fn unjoin(self: *World, a: BodyId, b: BodyId) void {
+    const key = exceptionKey(a, b);
+    const held = self.joined.getPtr(key) orelse return;
+    held.* -= 1;
+    if (held.* == 0) _ = self.joined.remove(key);
+}
+
+/// The joint, to read or to change its limits.
+pub fn joint(self: *World, handle: JointId) ?*Joint {
+    return self.joints.get(handle);
+}
+
+pub fn jointCount(self: *const World) usize {
+    return self.joints.count();
+}
+
 fn exceptionKey(a: BodyId, b: BodyId) [2]u64 {
     const x = a.toInt();
     const y = b.toInt();
@@ -507,6 +581,24 @@ pub fn step(self: *World, dt: f32) Error!void {
         if (!b.isActive()) continue;
         b.updateInertia();
         try self.markMover(@intCast(i));
+    }
+    // A sleeper held by a joint to what moves wakes, and so on down the
+    // chain.
+    var woke = true;
+    while (woke) {
+        woke = false;
+        for (self.joints.slots.items) |*slot| {
+            const j = &(slot.value orelse continue);
+            for ([2][2]BodyId{ .{ j.body_a, j.body_b }, .{ j.body_b, j.body_a } }) |pair| {
+                if (!self.isMover(pair[0])) continue;
+                const other = self.bodies.get(pair[1]) orelse continue;
+                if (other.type != .dynamic or self.isMover(pair[1])) continue;
+                other.wake();
+                other.updateInertia();
+                try self.markMover(pair[1].index);
+                woke = true;
+            }
+        }
     }
 
     // 2. Their shapes' boxes, swept along where they are going, and moved in
@@ -581,12 +673,16 @@ pub fn step(self: *World, dt: f32) Error!void {
         if (self.touches(f)) try self.contacts.put(gpa, f.key, stored);
     }
 
-    // 7. The substeps.
+    // 7. The substeps: the joints first in every pass, then the contacts.
+    const joint_step: joint_mod.Step = .{ .inv_h = inv_h, .softness = .of(@min(s.joint_hertz, 0.25 * inv_h), s.joint_damping_ratio, h), .max_turn = s.max_limit_turn };
     for (0..substeps) |_| {
         self.integrateVelocities(h);
+        for (self.joints.slots.items) |*slot| if (slot.value) |*j| if (self.jointMoves(j)) joint_mod.warmStart(j, self.bodyAt(j.body_a.index), self.bodyAt(j.body_b.index));
         for (self.constraints.items) |*c| contact.warmStart(c, self.bodyAt(c.body_a), self.bodyAt(c.body_b));
+        for (self.joints.slots.items) |*slot| if (slot.value) |*j| if (self.jointMoves(j)) joint_mod.solve(j, self.bodyAt(j.body_a.index), self.bodyAt(j.body_b.index), joint_step, .solve);
         for (self.constraints.items) |*c| contact.solve(c, self.bodyAt(c.body_a), self.bodyAt(c.body_b), solver_step, .solve);
         self.integratePositions(h);
+        for (self.joints.slots.items) |*slot| if (slot.value) |*j| if (self.jointMoves(j)) joint_mod.solve(j, self.bodyAt(j.body_a.index), self.bodyAt(j.body_b.index), joint_step, .relax);
         for (self.constraints.items) |*c| contact.solve(c, self.bodyAt(c.body_a), self.bodyAt(c.body_b), solver_step, .relax);
     }
 
@@ -624,6 +720,11 @@ pub fn step(self: *World, dt: f32) Error!void {
 
     // 11. Islands that have been still long enough fall asleep.
     if (s.enable_sleep) try self.updateSleep(dt);
+}
+
+/// Whether a joint has anything to do this step: one of its bodies moves.
+fn jointMoves(self: *const World, j: *const Joint) bool {
+    return self.isMover(j.body_a) or self.isMover(j.body_b);
 }
 
 fn markMover(self: *World, index: u32) Error!void {
@@ -690,7 +791,8 @@ const PairFinder = struct {
         const sensor = self.entry.def.sensor or theirs.def.sensor;
         // Two that cannot both move never push each other.
         if (!sensor and mine.type != .dynamic and their_body.type != .dynamic) return true;
-        if (world.exceptions.contains(exceptionKey(world.handleOfBody(self.entry.body_index), world.handleOfBody(theirs.body_index)))) return true;
+        const bodies = exceptionKey(world.handleOfBody(self.entry.body_index), world.handleOfBody(theirs.body_index));
+        if (world.exceptions.contains(bodies) or world.joined.contains(bodies)) return true;
         const a = @min(self.shape, other);
         const b = @max(self.shape, other);
         world.pairs.append(world.gpa, .{ a, b }) catch {
@@ -844,6 +946,19 @@ fn updateSleep(self: *World, dt: f32) Error!void {
         if (!self.isMover(self.handleOfBody(c.body_a)) or !self.isMover(self.handleOfBody(c.body_b))) continue;
         const ra = self.findRoot(c.body_a);
         const rb = self.findRoot(c.body_b);
+        if (ra != rb) self.island_parent.items[ra] = rb;
+    }
+    // And bodies a joint holds together.
+    for (self.joints.slots.items) |*slot| {
+        const j = slot.value orelse continue;
+        if (!self.isMover(j.body_a) or !self.isMover(j.body_b)) continue;
+        const a = self.bodyAt(j.body_a.index);
+        const b = self.bodyAt(j.body_b.index);
+        if (a.type == .kinematic and a.isActive()) b.sleep_time = 0;
+        if (b.type == .kinematic and b.isActive()) a.sleep_time = 0;
+        if (a.type != .dynamic or b.type != .dynamic) continue;
+        const ra = self.findRoot(j.body_a.index);
+        const rb = self.findRoot(j.body_b.index);
         if (ra != rb) self.island_parent.items[ra] = rb;
     }
     for (self.movers.items) |index| self.island_rest.items[index] = std.math.inf(f32);

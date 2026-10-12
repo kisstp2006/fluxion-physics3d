@@ -10,6 +10,7 @@
 //!   `collide`   where two solids touch, and how deep
 //!   `gjk`       how near two convex solids come, and where a cast stops
 //!   `contact`   a contact as the solver sees it
+//!   `joint`     two bodies held at a point: a ball with a cone and a twist, a hinge
 //!   `Tree`      a tree of boxes, for finding what is near
 //!   `geometry`  places, turns, boxes, and the matrix sums
 //!
@@ -41,6 +42,7 @@ pub const Mesh = @import("mesh.zig");
 pub const collide = @import("collide.zig");
 pub const gjk = @import("gjk.zig");
 pub const contact = @import("contact.zig");
+pub const joint = @import("joint.zig");
 pub const Tree = @import("tree.zig");
 pub const geometry = @import("geometry.zig");
 pub const Softness = @import("Softness.zig");
@@ -49,6 +51,9 @@ pub const BodyId = Body.Id;
 pub const ShapeId = Body.ShapeId;
 pub const BodyType = Body.Type;
 pub const BodyDef = Body.Def;
+pub const JointId = joint.Id;
+pub const JointDef = joint.Def;
+pub const Joint = joint.Joint;
 
 pub const Shape = shape.Shape;
 pub const Geometry = shape.Geometry;
@@ -82,6 +87,8 @@ test {
     _ = collide;
     _ = gjk;
     _ = contact;
+    _ = joint;
+    _ = @import("joint_test.zig");
     _ = Tree;
     _ = geometry;
     _ = Softness;

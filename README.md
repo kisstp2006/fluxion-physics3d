@@ -12,6 +12,7 @@ Rigid bodies in space. For Zig 0.16, on any machine and in a browser.
 | `collide` | Where two solids touch, and how deep. |
 | `gjk` | How near two convex solids come, and where a cast of one stops. |
 | `contact` | A contact as the solver sees it. |
+| `joint` | Two bodies held at a point: a ball with a cone and a twist, or a hinge with its limits. |
 | `Softness` | A spring as the solver steps it, and why every contact is a little of one. |
 | `Tree` | A tree of boxes: what is near, without looking at all of it. |
 | `geometry` | Places, turns, boxes, and the few matrix sums the rest needs. |
@@ -99,8 +100,22 @@ made half inside another slides out and stops. Friction pulls both ways
 along the surface, no harder in all than the friction times the push.
 Restitution comes last, from the speed each point came in at.
 
+**Joints hold two bodies at a point**, each body with a frame of the joint
+in its own space - the joint at rest where the two are one, whatever pose
+the bodies are in when it is made, which is what a ragdoll's bones need.
+A `ball` turns any way, as far as its `swing` cone and its `twist` about
+`x` let it; a `hinge` turns about `z` only, within its `twist`. A limit
+pushes like a contact, only when it is reached. Joints are solved first in
+every pass, warm from the step before, and two bodies a joint holds do not
+collide unless it says `collide`. `framesAt` gives the frames of a joint
+placed in the world.
+
+```zig
+_ = try world.createJoint(.{ .body_a = chest, .body_b = arm, .frame_a = shoulder, .frame_b = .identity, .swing = 0.8, .twist = .{ .lower = -0.4, .upper = 0.4 } });
+```
+
 **Bodies fall asleep** in islands: everything touching everything else
-that touches it, still for `time_to_sleep`. A step passes a sleeper over
+that touches it, or held to it by a joint, still for `time_to_sleep`. A step passes a sleeper over
 until something wakes it - a push, a new speed, a move, or a body running
 into it. A body riding something that moves never sleeps.
 
