@@ -177,3 +177,45 @@ test "a joint started past its limit turns back into it no faster than the most"
     const turned = world.joint(made).?.twistAngle(world.body(pin).?, world.body(arm).?);
     try testing.expectApproxEqAbs(@as(f32, 0.2), turned, 0.05);
 }
+
+test "many kinematic bodies held by joints, moved every step, among bodies that fall and touch" {
+    var world: World = .init(testing.allocator, .{});
+    defer world.deinit();
+    const ground = try world.createBody(.{ .type = .static, .position = .init(0, -0.5, 0) });
+    _ = try world.addShape(ground, .box(.init(40, 0.5, 40)));
+    var prng = std.Random.DefaultPrng.init(7);
+    const random = prng.random();
+    // Ten chains of kinematic links, as ten ragdolls following their bones.
+    var links: [10][8]World.BodyId = undefined;
+    for (&links, 0..) |*chain, c| {
+        for (chain, 0..) |*link, i| {
+            link.* = try world.createBody(.{ .type = .kinematic, .position = .init(@as(f32, @floatFromInt(c)) * 2, 1 + @as(f32, @floatFromInt(i)) * 0.3, 0) });
+            _ = try world.addShape(link.*, .sphere(0.12));
+            if (i > 0) _ = try world.createJoint(.{ .body_a = chain[i - 1], .body_b = link.*, .frame_b = .at(.init(0, -0.3, 0)) });
+        }
+    }
+    // And crates falling among them.
+    var crates: [12]World.BodyId = undefined;
+    for (&crates, 0..) |*crate, i| {
+        crate.* = try world.createBody(.{ .position = .init(@as(f32, @floatFromInt(i)) * 1.5, 3, 0.5) });
+        _ = try world.addShape(crate.*, .box(.init(0.3, 0.3, 0.3)));
+    }
+    for (0..3000) |s| {
+        for (links, 0..) |chain, c| for (chain, 0..) |link, i| {
+            const sway = @sin(@as(f32, @floatFromInt(s)) * 0.05 + @as(f32, @floatFromInt(c + i)));
+            world.setTransform(link, .init(@as(f32, @floatFromInt(c)) * 2 + sway * random.float(f32), 1 + @as(f32, @floatFromInt(i)) * 0.3, sway), .identity);
+        };
+        // Now and then a ragdoll falls: its links dynamic, and back.
+        if (s % 400 == 200) {
+            const c = random.uintLessThan(usize, 10);
+            for (&links[c], 0..) |*link, i| {
+                world.destroyBody(link.*);
+                link.* = try world.createBody(.{ .position = .init(@as(f32, @floatFromInt(c)) * 2, 1 + @as(f32, @floatFromInt(i)) * 0.3, 0) });
+                _ = try world.addShape(link.*, .sphere(0.12));
+                if (i > 0) _ = try world.createJoint(.{ .body_a = links[c][i - 1], .body_b = link.*, .frame_b = .at(.init(0, -0.3, 0)) });
+            }
+        }
+        try world.step(dt);
+    }
+    try testing.expect(world.bodyCount() > 0);
+}

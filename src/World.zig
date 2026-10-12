@@ -573,7 +573,7 @@ pub fn step(self: *World, dt: f32) Error!void {
 
     // 1. What moves this step.
     const body_slots = self.bodies.slotCount();
-    try self.mover_mark.resize(gpa, body_slots);
+    try self.growMarks(body_slots);
     self.movers.clearRetainingCapacity();
     for (self.bodies.slots.items, 0..) |*slot, i| {
         const b = &(slot.value orelse continue);
@@ -727,8 +727,17 @@ fn jointMoves(self: *const World, j: *const Joint) bool {
     return self.isMover(j.body_a) or self.isMover(j.body_b);
 }
 
+/// Room for `len` bodies' marks, the new ones nought: a step counts from
+/// one, so no body is a mover by what memory held before.
+fn growMarks(self: *World, len: usize) Error!void {
+    const had = self.mover_mark.items.len;
+    if (len <= had) return;
+    try self.mover_mark.resize(self.gpa, len);
+    @memset(self.mover_mark.items[had..], 0);
+}
+
 fn markMover(self: *World, index: u32) Error!void {
-    if (self.mover_mark.items.len <= index) try self.mover_mark.resize(self.gpa, index + 1);
+    try self.growMarks(index + 1);
     if (self.mover_mark.items[index] == self.step_count) return;
     self.mover_mark.items[index] = self.step_count;
     try self.movers.append(self.gpa, index);
