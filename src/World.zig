@@ -578,7 +578,11 @@ pub fn step(self: *World, dt: f32) Error!void {
     for (self.bodies.slots.items, 0..) |*slot, i| {
         const b = &(slot.value orelse continue);
         if (b.type == .dynamic and !b.awake and (!b.allow_sleep or !s.enable_sleep)) b.wake();
-        if (!b.isActive()) continue;
+        // A kinematic body still this step looks for what is near it all
+        // the same: a game puts its characters where they go rather than
+        // giving them a speed, and its areas stand still - and a sensor
+        // must see what stands in it.
+        if (!b.isActive() and b.type != .kinematic) continue;
         b.updateInertia();
         try self.markMover(@intCast(i));
     }

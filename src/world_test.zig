@@ -114,6 +114,46 @@ test "a ball falling through a sensor is seen going in and coming out, and pushe
     try testing.expect(world.body(ball).?.center.y < 0.3);
 }
 
+test "a still sensor sees a character put inside it and taken out, neither of them moving" {
+    var world = try withFloor();
+    defer world.deinit();
+    // An area and a character: both kinematic, both still - the character
+    // is put where it goes, as a game's walking code does, not given a speed.
+    const area = try world.createBody(.{ .type = .kinematic, .position = .init(0, 1, 0) });
+    const sensor = try world.addShape(area, .{ .geometry = .{ .box = .{ .half = .init(1, 1, 1) } }, .sensor = true });
+    const character = try world.createBody(.{ .type = .kinematic, .position = .init(5, 1, 0) });
+    _ = try world.addShape(character, .capsule(0.5, 0.3));
+    try stepFor(&world, 3);
+    var inside = false;
+    var began = false;
+    world.setTransform(character, .init(0, 1, 0), .identity);
+    for (0..3) |_| {
+        try world.step(dt);
+        for (world.beginEvents()) |e| if (e.sensor and (e.shape_a.eql(sensor) or e.shape_b.eql(sensor))) {
+            began = true;
+        };
+    }
+    try testing.expect(began);
+    inside = true;
+    // Standing still inside it, it stays inside: no end.
+    var ended = false;
+    for (0..10) |_| {
+        try world.step(dt);
+        for (world.endEvents()) |e| if (e.sensor and (e.shape_a.eql(sensor) or e.shape_b.eql(sensor))) {
+            ended = true;
+        };
+    }
+    try testing.expect(!ended);
+    world.setTransform(character, .init(5, 1, 0), .identity);
+    for (0..3) |_| {
+        try world.step(dt);
+        for (world.endEvents()) |e| if (e.sensor and (e.shape_a.eql(sensor) or e.shape_b.eql(sensor))) {
+            ended = true;
+        };
+    }
+    try testing.expect(inside and ended);
+}
+
 test "a ray meets the first thing in its way, and a cast stops where a shape first touches" {
     var world = try withFloor();
     defer world.deinit();
